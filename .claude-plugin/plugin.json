@@ -1,0 +1,9 @@
+{
+  "name": "pr-review",
+  "description": "Multi-agent PR review system for Swift codebases. Spawns 6 specialized agents in parallel for thorough code review covering breaking changes, code quality, unused code, DRY violations, style patterns, and SOLID principles.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Ilya"
+  },
+  "keywords": ["pr-review", "code-review", "swift", "multi-agent"]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "swift-plugins",
+  "owner": {
+    "name": "Ilya Maslau"
+  },
+  "plugins": [
+    {
+      "name": "pr-review",
+      "source": "./",
+      "description": "Multi-agent PR review system for Swift codebases",
+      "version": "1.0.0"
+    }
+  ]
+}
