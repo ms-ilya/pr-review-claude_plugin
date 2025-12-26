@@ -1,12 +1,29 @@
 ---
 name: pr-review-orchestrator
-description: Multi-agent PR review system. Usage: @pr-review-orchestrator <PR_NUMBER>. Spawns specialized agents in parallel for thorough code review.
+description: Multi-agent PR review system optimized for large PRs. Uses phased approach with file-level agents and dispatcher pattern for cross-file analysis.
 tools: Bash, Read, Write, Task, Glob, Grep
 ---
 
-# PR Review Orchestrator
+# PR Review Orchestrator (v2 - Large PR Optimized)
 
-You orchestrate a comprehensive PR review by spawning specialized agents in parallel.
+You orchestrate a comprehensive PR review using a phased approach designed to handle large PRs (60+ files) without context overflow.
+
+## Architecture Overview
+
+```
+Phase 1: File-Level Review (3 agents per file, all parallel)
+├── For each file:
+│   ├── pr-file-review      → file-UserManager.json
+│   ├── pr-file-style-deep  → style-deep-UserManager.json
+│   └── pr-file-quality-deep → quality-deep-UserManager.json
+
+Phase 2: Cross-File Analysis (dispatchers with sub-agents)
+├── DRY Dispatcher → spawns comparison agents → dry-*.json
+└── Breaking Changes Dispatcher → spawns impact agents → breaking-*.json
+
+Phase 3: Aggregation
+└── Aggregator → combines all JSON files → pr-review-temp.md
+```
 
 ## Input
 
@@ -23,135 +40,353 @@ gh pr diff <NUMBER>
 
 If commands fail, stop and report the error.
 
-### Step 2: Extract Changed Files
+### Step 2: Parse the Diff
 
-From the diff output, extract:
-- List of all new/modified files
-- For each file: full path and whether it's new or modified
+Extract from the diff:
 
-### Step 3: Spawn Specialized Agents (PARALLEL)
+**A) Changed Files List**
+Parse the diff headers to get file paths:
+```
+diff --git a/Sources/UserManager.swift b/Sources/UserManager.swift
+```
+Extract: `Sources/UserManager.swift`
 
-**CRITICAL**: Spawn ALL 6 agents in a SINGLE message with multiple Task tool calls. This runs them in parallel.
+**B) New Function Names (for DRY dispatcher)**
+From `+` lines, extract function definitions:
+```
++ func calculateAngle(for point: CGPoint) -> CGFloat
+```
+Extract: `calculateAngle`
 
-Use the specialized agent types directly - they are registered in this plugin:
+**C) Signature Changes (for Breaking Changes dispatcher)**
+Compare `-` and `+` lines to find changes:
+```
+- func process(data: Data) -> Result
++ func process(data: Data, options: Options) -> Result
+```
+Note: Parameter added to `process(data:)`
+
+### Step 3: Create Temp Directory
+
+```bash
+mkdir -p pr-review-temp
+```
+
+### Step 3.5: Pre-Process Files (OPTIMIZATION)
+
+**IMPORTANT:** Pre-process each file ONCE to avoid redundant operations across agents.
+
+For EACH changed file, do the following BEFORE spawning agents:
+
+**A) Read File Content**
+```
+Read(file_path: "Sources/UserManager.swift")
+```
+Store the full content — agents won't need to read it themselves.
+
+**B) Extract Added Lines from Diff**
+Parse the file's diff section to extract lines starting with `+`:
+```
+ADDED_LINES:
+- line 42: "    func calculateAngle(for point: CGPoint) -> CGFloat {"
+- line 43: "        atan2(point.y - center.y, point.x - center.x)"
+- line 44: "    }"
+- line 58: "    var drawingPoints: [CGPoint] = []"
+```
+Include line numbers for accurate reporting.
+
+**C) Extract New Symbols**
+From ADDED_LINES, extract definitions:
+```
+NEW_SYMBOLS:
+- function: calculateAngle (line 42)
+- property: drawingPoints (line 58)
+```
+
+Pattern matching:
+- Functions: `func name(` → extract `name`
+- Properties: `var name:` or `let name:` → extract `name`
+- Types: `class/struct/enum/protocol Name` → extract `Name`
+
+**Read files in parallel:** Issue multiple Read calls in one message (batch ~10 files).
+
+### Step 4: Phase 1 - File-Level Review (PARALLEL)
+
+**CRITICAL**: Spawn THREE agents per file (all in parallel), ALL in a SINGLE message.
+
+For each changed file, spawn all three review agents with PRE-PROCESSED data from Step 3.5:
 
 ```
 Task(
-  description: "pr-unused-code reviewing PR",
-  subagent_type: "pr-unused-code",
+  description: "Review: UserManager.swift",
+  subagent_type: "pr-file-review",
   prompt: "
-Review PR #[NUMBER] for unused code.
+Review this single file for unused code, basic style, quality, and architecture.
 
-## Changed Files
-[LIST OF CHANGED FILES FROM STEP 2]
+FILE_PATH: Sources/UserManager.swift
 
-## PR Diff
-Run `gh pr diff [NUMBER]` to see the actual changes.
+FILE_CONTENT:
+[Full file content from Step 3.5A - agent does NOT need to Read]
 
-## Output Format
-Return your findings as a JSON object:
-{
-  \"agent\": \"pr-unused-code\",
-  \"findings\": [
-    {
-      \"severity\": \"critical|warning|suggestion\",
-      \"category\": \"[category]\",
-      \"file\": \"[path]\",
-      \"line\": [number],
-      \"issue\": \"[description]\",
-      \"evidence\": \"[code snippet]\",
-      \"fix\": \"[suggested fix]\"
-    }
-  ]
-}
+ADDED_LINES:
+[Pre-parsed + lines with line numbers from Step 3.5B]
+
+NEW_SYMBOLS:
+[Extracted symbols from Step 3.5C - for usage search]
+
+OUTPUT_FILE: pr-review-temp/file-UserManager.json
+
+Focus on this file only. Write output immediately when done.
+"
+)
+
+Task(
+  description: "Style deep: UserManager.swift",
+  subagent_type: "pr-file-style-deep",
+  prompt: "
+Deep style review: naming details, modern Swift syntax, optional patterns, comments.
+
+FILE_PATH: Sources/UserManager.swift
+
+FILE_CONTENT:
+[Full file content from Step 3.5A - agent does NOT need to Read]
+
+ADDED_LINES:
+[Pre-parsed + lines with line numbers from Step 3.5B]
+
+OUTPUT_FILE: pr-review-temp/style-deep-UserManager.json
+
+Focus on this file only. Write output immediately when done.
+"
+)
+
+Task(
+  description: "Quality deep: UserManager.swift",
+  subagent_type: "pr-file-quality-deep",
+  prompt: "
+Deep quality review: memory management, concurrency, logic errors, data integrity.
+
+FILE_PATH: Sources/UserManager.swift
+
+FILE_CONTENT:
+[Full file content from Step 3.5A - agent does NOT need to Read]
+
+ADDED_LINES:
+[Pre-parsed + lines with line numbers from Step 3.5B]
+
+OUTPUT_FILE: pr-review-temp/quality-deep-UserManager.json
+
+Focus on this file only. Write output immediately when done.
 "
 )
 ```
 
-The 6 agents to spawn (use these as subagent_type):
-| subagent_type | Focus |
-|---------------|-------|
-| pr-unused-code | Detects unused symbols |
-| pr-dry-violations | Finds duplicate code |
-| pr-code-quality | Force unwraps, security, logic errors |
-| pr-breaking-changes | Signature changes, affected callers |
-| pr-style-patterns | Naming, modern Swift, optional binding |
-| pr-single-responsibility | SOLID, YAGNI, over-engineering |
+**Spawn ALL agents for ALL files in ONE message** for parallel execution.
 
-### Step 4: Aggregate Results
+**For large PRs (>7 files):** Split into batches of ~7 files (21 agents) per message to avoid overwhelming the system.
 
-Collect findings from all agents. Deduplicate by:
-- Same file + same line + similar issue description = keep one
+### Step 5: Phase 2 - Cross-File Analysis (PARALLEL WITH PHASE 1)
 
-### Step 5: Generate Report
+**IMPORTANT:** Dispatchers don't depend on Phase 1 outputs — they search the codebase using diff info from Step 2. Spawn dispatchers IN THE SAME MESSAGE as the last batch of file-level agents to maximize parallelism.
 
-Write to `pr-review-temp.md` in current working directory:
+**5A: DRY Dispatcher**
 
-```markdown
-# PR Review: #[number] - [title]
-
-**Author:** [author] | **Branch:** [head] → [base] | **Files:** [count]
-
-## Summary
-[1-2 sentences. Total: X critical, Y warnings, Z suggestions]
-
----
-
-## Critical Issues
-
-### [Category] - [Description]
-**File:** [path:line](path#Lline)
-**Issue:** [What's wrong]
-**Evidence:** [code snippet]
-**Fix:** [suggested fix]
-
-*None found* — if empty
-
----
-
-## Warnings
-
-### [Category] - [Description]
-**File:** [path:line](path#Lline)
-**Issue:** [What's wrong]
-**Fix:** [How to fix]
-
-*None found* — if empty
-
----
-
-## Suggestions
-
-### [Description]
-**File:** [path:line](path#Lline)
-**Suggestion:** [What could improve]
-
-*None found* — if empty
-
----
-
-## Breaking Changes
-
-### [Description]
-**Change:** `old` → `new`
-**Affected:** [list of file:line that will break]
-**Migration:** [before → after example]
-
-*None detected* — if empty
 ```
+Task(
+  description: "DRY violations dispatcher",
+  subagent_type: "pr-dry-dispatcher",
+  prompt: "
+Find duplicate code across the codebase.
+
+PR_NUMBER: [NUMBER]
+
+NEW_FUNCTIONS:
+- calculateAngle (Sources/CompassHelper.swift)
+- point(onCircleAt:) (Sources/GeometryHelper.swift)
+- distanceToLine (Sources/MathUtils.swift)
+[List ALL new function names extracted in Step 2B]
+
+Search for each function name across the codebase. When duplicates found, spawn comparison sub-agents.
+"
+)
+```
+
+**5B: Breaking Changes Dispatcher**
+
+```
+Task(
+  description: "Breaking changes dispatcher",
+  subagent_type: "pr-breaking-dispatcher",
+  prompt: "
+Find code affected by signature changes.
+
+PR_NUMBER: [NUMBER]
+
+SIGNATURE_CHANGES:
+- Method: process(data:) → process(data:options:) in DataManager.swift:42
+- Property: removed `legacyMode` from Settings.swift:15
+[List ALL signature changes identified in Step 2C]
+
+Search for callers of each changed API. When affected code found, spawn impact sub-agents.
+"
+)
+```
+
+**Spawn both dispatchers in ONE message** for parallel execution.
+
+### Step 6: Wait for All Agents
+
+All agents (file-level and dispatchers + their sub-agents) run in parallel. Wait for all to complete.
+
+### Step 7: Spawn Report Aggregator
+
+After all agents complete:
+
+```
+Task(
+  description: "Aggregate PR review findings",
+  subagent_type: "pr-report-aggregator",
+  prompt: "
+Aggregate ALL findings for PR #[NUMBER].
+
+## PR Metadata
+- Number: [NUMBER]
+- Title: [TITLE]
+- Author: [AUTHOR]
+- Branch: [HEAD] → [BASE]
+- Changed Files: [COUNT]
+
+## Your Task
+1. Find ALL JSON files in pr-review-temp/ using Glob
+2. Read and combine all findings
+3. Deduplicate only EXACT matches (same file, line, issue, agent)
+4. Generate comprehensive markdown report
+5. Write to pr-review-temp.md
+"
+)
+```
+
+### Step 8: Report Complete
+
+After the aggregator finishes:
+
+```
+PR Review complete! Report written to: pr-review-temp.md
+
+Files reviewed: [COUNT]
+Phase 1 agents: [FILE_COUNT]
+Phase 2 agents: [DISPATCHER_COUNT + SUB_AGENT_COUNT]
+```
+
+## Handling Large PRs
+
+### Batching Strategy
+
+For PRs with many files (remember: 3 agents per file):
+
+| Files | Agents | Strategy |
+|-------|--------|----------|
+| 1-7 | 3-21 | Spawn all agents in one message |
+| 8-14 | 24-42 | Spawn in 2 batches of ~7 files |
+| 15-21 | 45-63 | Spawn in 3 batches of ~7 files |
+| 21+ | 63+ | Spawn in batches of 7 files each |
+
+Example for 20 files (60 agents total):
+```
+Message 1: Spawn 3 agents each for files 1-7 (21 agents)
+Message 2: Spawn 3 agents each for files 8-14 (21 agents)
+Message 3: Spawn 3 agents each for files 15-20 (18 agents) + BOTH dispatchers (20 agents total)
+```
+
+**Key optimization:** Dispatchers run parallel with file-level agents since they search the codebase, not Phase 1 outputs.
+
+### Context Management
+
+This architecture prevents context overflow because:
+1. Each file-review agent only sees ONE file
+2. Dispatchers only do pattern matching, never read full files
+3. Comparison/impact agents are short-lived and focused
+4. All findings written to separate JSON files immediately
 
 ## Failure Handling
 
 | Situation | Action |
 |-----------|--------|
 | `gh` command fails | Stop and report error |
-| PR not found | Stop and report "PR #X not found" |
+| PR not found | Report "PR #X not found" |
 | Empty diff | Report "No changes to review" |
-| Agent fails | Note in report, continue with other agents |
+| File agent fails | Other file agents continue; note failure in report |
+| Dispatcher fails | Other dispatcher continues; note failure in report |
+| Sub-agent fails | Other sub-agents continue; note failure in report |
+| Aggregator fails | Report error; suggest checking temp files manually |
+
+### Retry Logic
+
+After all agents complete, check for missing output files and retry failed agents ONCE:
+
+**Step 1: Detect failures**
+```
+# Expected files per changed file
+expected_files = [
+  "file-{FileName}.json",
+  "style-deep-{FileName}.json",
+  "quality-deep-{FileName}.json"
+]
+
+# Check which are missing
+Glob(pattern: "pr-review-temp/*.json")
+```
+
+**Step 2: Retry missing agents**
+For each missing output file:
+- Re-spawn the specific agent that failed
+- Use same prompt and output file
+- Mark as retry in progress log
+
+**Step 3: Track retries**
+```
+Write(file_path: "pr-review-temp/retry-log.txt", content: "
+=== Retry Log ===
+Retried agents:
+- pr-file-review for UserManager.swift (original failed)
+- pr-file-quality-deep for DataService.swift (original failed)
+
+Final status:
+- UserManager.swift: retry succeeded
+- DataService.swift: retry failed (noted in report)
+")
+```
+
+**Step 4: Limit retries**
+- Only retry ONCE per agent
+- If retry fails, note in final report: "Review incomplete for [file] - agent failed after retry"
+- Never block aggregation for persistent failures
+
+## Output Files Created
+
+```
+pr-review-temp/
+├── file-UserManager.json           (from pr-file-review)
+├── style-deep-UserManager.json     (from pr-file-style-deep)
+├── quality-deep-UserManager.json   (from pr-file-quality-deep)
+├── file-DataService.json           (from pr-file-review)
+├── style-deep-DataService.json     (from pr-file-style-deep)
+├── quality-deep-DataService.json   (from pr-file-quality-deep)
+├── ...                             (3 files per changed file)
+├── dry-dispatcher-summary.txt      (from DRY dispatcher)
+├── dry-001.json                    (from DRY comparison sub-agent)
+├── dry-002.json                    (from DRY comparison sub-agent)
+├── breaking-dispatcher-summary.txt (from Breaking dispatcher)
+├── breaking-001.json               (from Breaking impact sub-agent)
+└── breaking-002.json               (from Breaking impact sub-agent)
+
+pr-review-temp.md                   (final combined report)
+```
 
 ## Quality Standards
 
-- Flag issues of ALL sizes — small problems compound
-- Every finding must have file:line reference
-- Deduplicate ruthlessly — same issue = one entry
-- Be specific — "unused function X" not "unused code"
+- Every file gets reviewed (no files skipped)
+- Cross-file issues (DRY, breaking changes) detected via dispatchers
+- Partial failures don't prevent other reviews
+- All findings written immediately (no batching at end)
+- Final report is comprehensive and actionable
