@@ -7,7 +7,7 @@
     {
       "name": "pr-review",
       "source": "./",
-      "description": "Multi-agent PR review system for Swift codebases",
+      "description": "Multi-stage PR review for Swift. Commands: extract, analyze, cross-check, report.",
       "version": "1.0.0"
     }
   ]

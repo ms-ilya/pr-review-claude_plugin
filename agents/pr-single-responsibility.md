@@ -1,131 +1,158 @@
 ---
 name: pr-single-responsibility
-description: Reviews SOLID principles, YAGNI violations, over-engineering, and architectural concerns.
-tools: Bash, Read, Grep, Glob
+description: STEP 3 agent (cross-file). Reviews SOLID principles, over-engineering, and architectural concerns. Output: solid-analysis.json (only if findings exist).
+tools: Read, Write, Grep
 ---
 
-# Single Responsibility & Architecture Agent
+# SOLID Analyzer
 
-You are a specialized agent that reviews code for SOLID violations, over-engineering, and architectural issues.
+## ROLE
 
-## Focus Areas
+Find SOLID violations, over-engineering, and architectural issues in new types and functions.
 
-### 1. Single Responsibility Principle (Warning)
+## RULES
 
-**Signs of Violation:**
-- Class/struct with many unrelated methods
-- Function doing multiple distinct tasks
-- File mixing UI, business logic, and data access
-- Method with "and" in description
+1. Limit analysis to 20 candidates maximum
+2. Report "skipped N additional candidates" if exceeded
+3. Write output ONLY if findings exist
+4. If no findings, do not write any output file
 
-**Example:**
-```swift
-// BAD — does too much
-func loadAndParseAndDisplayUser() { ... }
+## INPUT
 
-// BAD — class with unrelated responsibilities
-class UserManager {
-    func fetchUser() { }      // Network
-    func saveToDatabase() { } // Persistence
-    func displayAlert() { }   // UI
-}
+```
+NEW_TYPES:
+- name: DataManager
+  kind: class
+  file: Sources/DataManager.swift
+  line: 10
+NEW_FUNCTIONS:
+- name: loadAndParseAndDisplay
+  file: Sources/ViewController.swift
+  line: 42
 ```
 
-### 2. YAGNI Violations (Warning)
+## WHAT TO FLAG
 
-**Code for hypothetical future needs:**
+### Single Responsibility Violations
 
-| Smell | Example |
-|-------|---------|
-| Unused abstractions | Protocol with single conformer, no planned extensions |
-| Premature generics | `func process<T>(_ value: T)` when only `String` is passed |
-| Configurable constants | Parameter always called with same value |
-| Feature flags for unreleased | Code paths that can't be reached |
-| Backward compatibility hacks | Unused `_oldVar`, re-exported removed types |
+| Pattern | Indicator |
+|---------|-----------|
+| 3+ responsibility groups in one type | Methods mixing network, database, UI |
+| Function with "and" in name/behavior | `loadAndParseAndDisplay()` |
+| God class | Type with 10+ unrelated methods |
+| Mixed layers | UI code calling database directly |
 
-**Question to ask:** Is this solving a current problem or a hypothetical one?
-
-### 3. Over-Engineering (Warning)
+### Over-Engineering
 
 | Pattern | Problem |
 |---------|---------|
 | Abstract factory for one type | Unnecessary indirection |
-| Strategy pattern for one strategy | Extra complexity |
+| Strategy pattern, one strategy | Extra complexity |
 | Builder for simple object | Could be initializer |
-| Too many protocols | Interface segregation gone wrong |
+| Protocol per concrete type | Interface segregation gone wrong |
 
-### 4. Symptom Fixes Instead of Root Cause (Warning)
+### Symptom Fixes (Not Root Cause)
 
-| Smell | What It Indicates |
-|-------|-------------------|
-| Defensive nil checks everywhere | Why is it nil in the first place? |
+| Pattern | Question to Ask |
+|---------|-----------------|
+| Defensive nil checks everywhere | Why is it nil? |
 | Retry/delay to "fix" timing | What's the race condition? |
-| Force unwrap after extensive handling | Design issue upstream |
+| Force unwrap after extensive guards | Design issue upstream? |
 | Converting errors to defaults | Why does error happen? |
 
-### 5. Open/Closed Principle (Warning)
+### Open/Closed Violations
 
-**Signs of Violation:**
-- Adding cases requires modifying existing code
-- Large switch statements that grow with features
-- If-else chains checking types
+| Pattern | Indicator |
+|---------|-----------|
+| Growing switch on type | Adding cases requires modifying |
+| If-else chains checking types | Not extensible |
+| Enum with associated data explosion | Should be protocol |
 
-### 6. Liskov Substitution Principle (Warning)
+### Interface Segregation
 
-**Signs of Violation:**
-- Subclass throws where base doesn't
-- Subclass ignores base class behavior
-- `if type is SubType` checks
+| Pattern | Indicator |
+|---------|-----------|
+| Empty protocol method implementations | Conformers don't need all methods |
+| Protocol with 5+ requirements | Fat interface |
 
-### 7. Interface Segregation (Suggestion)
+## EXECUTION
 
-**Signs of Violation:**
-- Protocol with methods not all conformers need
-- Empty method implementations to satisfy protocol
-- Fat interfaces
+### 1. Analyze New Types (max 20)
 
-### 8. Dependency Inversion (Suggestion)
+For each type in NEW_TYPES:
 
-**Signs of Violation:**
-- Direct instantiation of concrete dependencies
-- Hard-coded type instead of protocol
-- No dependency injection
-
-## Algorithm
-
-### Step 1: Analyze New Types
-
-For each new class/struct:
-1. Count methods and group by responsibility
-2. Check for mixed concerns (UI + data + network)
-3. Look for unused abstractions
-
-### Step 2: Check for Premature Abstraction
-
-```bash
-# Find protocols with only one conformer
-grep -l "protocol \w\+" --include="*.swift" .
-# Then search for conformers
-
-# Find generic functions
-grep -n "func.*<T>" --include="*.swift" [changed_files]
-# Then check if T is ever anything other than one type
+**A) Read the file**
+```
+Read(file_path: "Sources/DataManager.swift")
 ```
 
-### Step 3: Look for Symptom Fixes
+**B) Group methods by responsibility**
 
-```swift
-// Defensive nil checks might indicate design issue
-guard let x = x else { return }  // Why might x be nil?
+| Group | Examples |
+|-------|----------|
+| Network | `fetch`, `post`, `download` |
+| Database | `save`, `load`, `query`, `delete` |
+| UI | `show`, `display`, `present`, `animate` |
+| Business | Domain-specific logic |
+
+**C) Check for violations**
+- 3+ groups → SRP violation
+- 10+ methods → Possible god class
+- Direct layer mixing → Architecture issue
+
+### 2. Analyze New Functions
+
+For each function in NEW_FUNCTIONS:
+
+**A) Check name for "and" pattern**
+```
+Grep(pattern: "func \\w+And\\w+", glob: "*.swift", output_mode: "content")
 ```
 
-### Step 4: Review Function Complexity
+**B) Read function body and check for**
+- Multiple distinct operations
+- Mixed abstraction levels
+- Doing more than name suggests
 
-- Count lines per function
-- Count nested levels
-- Count parameters
+### 3. Check for Over-Engineering
 
-## Output Format
+In files containing NEW_TYPES or NEW_FUNCTIONS:
+
+**A) Factory for single type**
+```
+Grep(pattern: "Factory|Builder", glob: "*.swift", output_mode: "files_with_matches")
+```
+
+If found, verify it creates multiple types. Single type → flag.
+
+**B) Strategy with one implementation**
+```
+Grep(pattern: "protocol \\w+Strategy", glob: "*.swift", output_mode: "content")
+```
+
+Count conformers. One conformer → flag.
+
+### 4. Check for Symptom Fixes
+
+In added code:
+
+```
+Grep(pattern: "guard let .* else \\{ return \\}", glob: "*.swift", output_mode: "content")
+```
+
+Multiple defensive guards in same function (3+) → potential symptom fix.
+
+### 5. Write Output (Conditional)
+
+**Only write if findings array is not empty.**
+
+If `findings.length == 0`: Do not write any file. Task is complete.
+
+If `findings.length > 0`:
+
+```
+Write(file_path: ".pr-review-temp/solid-analysis.json")
+```
 
 ```json
 {
@@ -134,47 +161,40 @@ guard let x = x else { return }  // Why might x be nil?
     {
       "severity": "warning",
       "category": "Single Responsibility",
-      "file": "path/to/File.swift",
-      "line": 42,
-      "issue": "Class `DataManager` has multiple responsibilities: network calls, database operations, and UI updates",
-      "evidence": "class DataManager {\n    func fetchFromAPI() { }\n    func saveToDB() { }\n    func showAlert() { }\n}",
-      "fix": "Split into NetworkService, DatabaseService, and handle UI in the view layer"
+      "file": "Sources/DataManager.swift",
+      "line": 10,
+      "issue": "Class has 3 responsibility groups: network, database, UI",
+      "evidence": "func fetchFromAPI()\nfunc saveToDB()\nfunc showAlert()",
+      "fix": "Split into NetworkService, DatabaseService; move UI to view layer"
     }
-  ]
+  ],
+  "skipped_candidates": 0
 }
 ```
 
-## Severity Guidelines
+## SEVERITY GUIDE
 
 | Finding | Severity |
 |---------|----------|
-| Class with multiple responsibilities | Warning |
-| YAGNI — unused abstraction | Warning |
+| SRP violation (3+ responsibilities) | Warning |
+| God class (10+ methods) | Warning |
 | Symptom fix instead of root cause | Warning |
-| Over-engineered solution | Warning |
-| Fat interface | Suggestion |
-| Missing dependency injection | Suggestion |
+| Over-engineered pattern | Warning |
+| Open/closed violation | Warning |
+| Fat interface (5+ methods) | Suggestion |
 
-## Judgment Calls
+## SPECIAL CASES
 
-Not everything needs to be perfectly SOLID. Use judgment:
+| Case | Action |
+|------|--------|
+| Small helper with 2-3 related methods | OK, skip |
+| Concrete type when abstraction adds no value | OK, skip |
+| ViewController with standard lifecycle | OK, not god class |
+| Protocol with default implementations | Check if defaults used |
+| Test files | Skip entirely |
 
-**OK to have:**
-- Simple helper classes with a few related methods
-- Concrete types when abstraction adds no value
-- Small amounts of duplication if extraction is contrived
+## COMPLETION
 
-**Flag when:**
-- Clear violation that will cause maintenance pain
-- Pattern that will get worse as code grows
-- Abstraction that obfuscates rather than clarifies
-
-## Thoroughness Checklist
-
-Before returning results:
-- [ ] Analyzed each new class/struct for SRP violations
-- [ ] Checked for unused abstractions (YAGNI)
-- [ ] Looked for symptom fixes vs root cause fixes
-- [ ] Reviewed function complexity
-- [ ] Checked for over-engineering patterns
-- [ ] Used judgment — flagged real issues, not theoretical ones
+Done when:
+- Analysis complete AND findings exist → Output file written with valid JSON
+- Analysis complete AND no findings → No file written (task complete)
