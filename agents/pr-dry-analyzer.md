@@ -1,130 +1,69 @@
 ---
 name: pr-dry-analyzer
-description: STEP 3 agent (cross-file). Finds and analyzes duplicate functions in one pass. Output: dry-analysis.json (only if findings exist).
+description: Cross-file analysis to find duplicate function implementations.
 tools: Read, Write, Grep
+model: sonnet
 ---
 
-# DRY Analyzer
-
-## ROLE
-
-Find potential duplicate functions and analyze them in a single pass.
-
-## RULES
-
-1. Limit analysis to 20 candidates maximum
-2. Report "skipped N additional candidates" if exceeded
-3. Write output ONLY if findings exist
-4. If no findings, do not write any output file
+Find duplicate functions. Max 20 candidates. ALWAYS write output.
 
 ## INPUT
 
 ```
 NEW_FUNCTIONS:
-- name: calculateAngle
-  file: Sources/CompassHelper.swift
-  line: 42
-- name: computeAngle
-  file: Sources/GeometryHelper.swift
-  line: 88
+calculateAngle|Sources/CompassHelper.swift:42
+OUTPUT_FILE: .pr-review-temp/dry-analysis.json
 ```
+
+**Empty NEW_FUNCTIONS:** Write `"status": "skipped"`, `"findings": []`.
 
 ## EXECUTION
 
-### 1. Search for Name Duplicates
+### 1. Name Duplicates (Two-Phase)
 
-For each function in NEW_FUNCTIONS:
-
+**Phase 1 - Find files (cheap):**
 ```
-Grep(pattern: "func functionName\\(", glob: "*.swift", output_mode: "content")
+Grep(pattern: "func functionName\\(", glob: "*.swift", output_mode: "files_with_matches", head_limit: 10)
 ```
+2+ files → candidate. **Phase 2 - Read matched files** in step 3.
 
-If function name appears in multiple files → candidate for comparison.
+### 2. Semantic Duplicates
 
-### 2. Search for Semantic Duplicates
+Search for these patterns ONLY (use `files_with_matches`, `head_limit: 10`):
+- Math: `atan2\(`, `sqrt\(.*pow\(`, `hypot\(`
+- Clamping: `min\(max\(`, `max\(min\(`
+- Sorting: `sorted\(by:`, `sort\(by:`
 
-| Pattern Type | Grep Pattern |
-|--------------|--------------|
-| Angle calc | `atan2\\(` |
-| Distance calc | `sqrt\\(.*pow\\(\|hypot\\(` |
-| Clamping | `min\\(max\\(\|max\\(.*min\\(` |
+2+ files → candidate.
 
-If 2+ matches in different files → candidate for comparison.
+### 3. Compare (max 20)
 
-### 3. Analyze Candidates (max 20)
+Read both files (limit 200 lines each). Extract function body only.
 
-For each candidate pair:
+**Normalization rules:**
+1. Remove all whitespace/newlines (collapse to single spaces)
+2. Remove all comments (`//` and `/* */`)
+3. Replace all variable names with `$VAR` (except keywords)
+4. Remove access modifiers (`public`, `private`, `internal`, `fileprivate`)
+5. Remove `static`, `final`, `override`, `@objc` keywords
+6. Remove explicit `return` keyword if single-expression
+7. Normalize string literals to `"$STR"`
 
-**A) Read Both Files**
-```
-Read(file_path: "file1.swift")
-Read(file_path: "file2.swift")
-```
+**Similarity (matching tokens / total):**
+- >90%: TRUE duplicate → warning
+- 70-90%: LIKELY duplicate → warning
+- 50-70%: POSSIBLE duplicate → suggestion
+- <50%: Skip
 
-**B) Compare Function Bodies**
+**Exceptions:**
+- Different signatures → not duplicate
+- Protocol implementations → flag only if >90%
+- Same type extension in 2 files → TRUE duplicate
 
-Ignore:
-- Whitespace, comments
-- Variable names (if logic is same)
-- `static` vs instance
-- `return` keyword (implicit vs explicit)
-- Access modifiers
+### 4. Output
 
-Compare:
-- Core operations
-- Control flow
-- Return logic
-- Function calls
+Write to OUTPUT_FILE per `schemas/agent-output.schema.json`.
 
-**C) Assess Similarity**
+**CRITICAL:** `file` field MUST be from NEW_FUNCTIONS. Duplicate location goes in `issue` and `evidence`.
 
-| Similarity | Verdict | Action |
-|------------|---------|--------|
-| >90% | TRUE DUPLICATE | Add finding |
-| 70-90% | LIKELY DUPLICATE | Add finding |
-| 50-70% | POSSIBLE DUPLICATE | Add finding (suggestion) |
-| <50% | NOT DUPLICATE | Skip |
-
-### 4. Write Output (Conditional)
-
-**Only write if findings array is not empty.**
-
-If `findings.length == 0`: Do not write any file. Task is complete.
-
-If `findings.length > 0`:
-
-```
-Write(file_path: ".pr-review-temp/dry-analysis.json")
-```
-
-```json
-{
-  "agent": "pr-dry-analyzer",
-  "findings": [
-    {
-      "severity": "warning",
-      "category": "DRY Violation",
-      "file": "Sources/CompassHelper.swift",
-      "line": 42,
-      "issue": "Function duplicates implementation in GeometryHelper.swift:88",
-      "evidence": "Both functions calculate angle using atan2",
-      "fix": "Extract to shared utility"
-    }
-  ],
-  "skipped_candidates": 0
-}
-```
-
-## SPECIAL CASES
-
-| Case | Action |
-|------|--------|
-| Same name, different signature | NOT duplicate |
-| Protocol implementations | Flag only if >90% identical |
-| Same type extension in 2 files | TRUE duplicate |
-
-## COMPLETION
-
-Done when:
-- Analysis complete AND findings exist → Output file written with valid JSON
-- Analysis complete AND no findings → No file written (task complete)
+Category: `"DRY Violation"`. Status: `"skipped"` if NEW_FUNCTIONS empty.

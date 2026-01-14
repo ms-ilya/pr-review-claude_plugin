@@ -1,94 +1,106 @@
 ---
 name: pr-review-analyze
-description: Per-file analysis for PR review. Triggers on "Analyse PR <number> files". Requires extract step first.
-tools: Task, Read, Glob
+description: Per-file analysis with parallel background agents. Triggers on "Analyse PR <number> files".
+tools: Task, Bash, Glob, TaskOutput
 ---
-
-# PR Review: Analyze
-
-## ROLE
-
-Second step of PR review pipeline. Spawn per-file review agents for each changed file.
-
-## TRIGGERS
-
-- "Analyse PR 170 files"
-- "Analyze PR 170 files"
-- "Review PR 170 files"
-
-## PREREQUISITES
-
-`.pr-review-temp/pr-context.json` must exist. Run "Extract context for PR <number>" first.
 
 ## EXECUTION
 
-### 1. Load Context
+### 1. Load (Minimal Context)
 
-```
-Read(file_path: ".pr-review-temp/pr-context.json")
-```
+Use jq to extract only file list (NOT full JSON):
 
-If missing: `Run "Extract context for PR <number>" first.`
-
-Extract `changed_files` array.
-
-### 2. Check Existing Progress
-
-```
-Glob(pattern: ".pr-review-temp/review-*.json")
+```bash
+jq -r '.changed_files[] | select(.change_type != "deleted") | "\(.path)|\(.added_lines | @json)|\(.new_symbols | @json)"' .pr-review-temp/pr-context.json
 ```
 
-Skip files that already have output (note: files with no findings won't have output).
+Output format per line: `path|["42-50","88"]|[symbols json]`
 
-### 3. Process Files in Batches
+If file missing: report "Run 'Extract context for PR [N]' first" → exit.
 
-Batch size: 5 files (5 agents per batch).
+If output empty: report "No analyzable files" → exit.
 
-For each file, convert path to SafePath:
-- Replace `/` with `_`
-- Replace spaces with `_`
-- Remove `.swift` extension
+### 2. Resume
 
-**Spawn 1 agent per file in ONE message:**
+`Glob(".pr-review-temp/review-*.json")` → build set of completed SafePaths.
 
-```
-Task(
-  description: "Analyze: [FILENAME]",
-  subagent_type: "pr-review:pr-file-analyzer",
-  prompt: "FILE_PATH: [path]\nADDED_LINES: [JSON]\nNEW_SYMBOLS: [JSON]\nOUTPUT_FILE: .pr-review-temp/review-[SAFEPATH].json"
-)
-```
+SafePath: replace `/` with `--`, spaces with `__`, dots with `_DOT_`, remove `.swift` extension only.
 
-### 4. Track Progress
+Filter `changed_files` to only files WITHOUT existing `review-[SAFEPATH].json`.
 
-Agents only write output if findings exist. Track completion by counting returned agents, not output files.
+If all files processed: report "All files already processed" → exit.
 
-### 5. Retry Failed Files (Max 1)
+### 3. Batch
 
-Re-spawn agents for failed tasks using same format.
+Group remaining files into batches of 5.
 
-### 6. Report
+### 4. Process Each Batch (Parallel)
+
+**Spawn ALL files in batch in ONE message with `run_in_background: true`:**
 
 ```
-Analysis complete.
-Files processed: X/Y
-Review outputs: Z files with findings
-
-Next: "Check cross-file issues for PR <number>"
+Task(run_in_background: true,
+     subagent_type: "pr-review:pr-file-analyzer",
+     prompt: "FILE_PATH: [path]
+ADDED_LINES: [\"42-50\", \"88\"]
+NEW_SYMBOLS: [JSON array]
+OUTPUT_FILE: .pr-review-temp/review-[SAFEPATH].json")
 ```
 
-## IDEMPOTENCY
+Collect returned `task_id` for each spawned agent.
 
-Re-running may re-analyze files with no findings (no way to distinguish from unprocessed). Safe to resume after interruption.
+Report: `Spawned batch X/Y (N files)`
 
-## ERROR HANDLING
+### 5. Poll for Completion
 
-| Error | Action |
-|-------|--------|
-| Context missing | "Run extract first" |
-| Agent fails | Retry once, then continue |
-| Partial completion | Report counts, continue |
+For each `task_id` from step 4:
 
-## COMPLETION
+```
+TaskOutput(task_id: [id], block: false, timeout: 5000)
+```
 
-Done when all files have been processed (agents completed or retries exhausted).
+**Poll loop:**
+- Initial wait: 2 seconds before first poll
+- Poll interval: 2 seconds
+- Per-task timeout: 5 minutes (300s)
+- Batch timeout: 10 minutes (600s)
+
+**Completion criteria (TaskOutput status):**
+- `status: "completed"` → Task finished
+- `status: "failed"` → Task crashed, mark for retry
+
+Report during polling: `Polling... X/Y complete`
+
+### 6. Handle Failures
+
+Failed files requeued to next batch. Max retries per file: 2. After max retries: record in final report, continue.
+
+Report on failure: `Batch X/Y: N file(s) failed, requeuing`
+
+### 7. Count Findings
+
+After batch completes, count using jq (NOT Read):
+
+```bash
+jq -s '[.[].findings | length] | add' .pr-review-temp/review-*.json
+```
+
+Report: `Batch X/Y complete | Files: A/B | Findings: C`
+
+### 8. Next Batch
+
+Repeat steps 4-7 for remaining batches.
+
+### 9. Final Report
+
+```
+Complete. Files: X/Y | Findings: Z | Failed: F
+```
+
+If failures exist after all retries:
+```
+Failed files:
+- [path]: [error reason]
+```
+
+**Next step:** To check cross-file issues, run: `Check cross-file issues for PR [N]`

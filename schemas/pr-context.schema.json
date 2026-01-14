@@ -1,56 +1,25 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://pr-review-plugin/schemas/pr-context.schema.json",
-  "title": "PR Context",
-  "description": "Schema for PR context extracted by pr-context-extractor agent",
   "type": "object",
-  "required": ["pr_number", "title", "author", "base_branch", "head_branch", "changed_files", "new_functions", "new_types", "signature_changes"],
+  "required": ["pr_number", "title", "author", "base_branch", "head_branch", "changed_files", "signature_changes"],
   "properties": {
-    "pr_number": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "title": {
-      "type": "string"
-    },
-    "author": {
-      "type": "string"
-    },
-    "base_branch": {
-      "type": "string"
-    },
-    "head_branch": {
-      "type": "string"
-    },
+    "pr_number": {"type": "integer", "minimum": 1},
+    "title": {"type": "string"},
+    "author": {"type": "string"},
+    "base_branch": {"type": "string"},
+    "head_branch": {"type": "string"},
     "changed_files": {
       "type": "array",
       "items": {
         "type": "object",
         "required": ["path", "change_type", "added_lines", "new_symbols"],
         "properties": {
-          "path": {
-            "type": "string"
-          },
-          "change_type": {
-            "type": "string",
-            "enum": ["added", "modified", "deleted"]
-          },
+          "path": {"type": "string"},
+          "change_type": {"type": "string", "enum": ["added", "modified", "deleted"]},
           "added_lines": {
             "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["line", "content"],
-              "properties": {
-                "line": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "content": {
-                  "type": "string"
-                }
-              },
-              "additionalProperties": false
-            }
+            "description": "Line numbers as integers or ranges like '42-50'",
+            "items": {"oneOf": [{"type": "integer", "minimum": 1}, {"type": "string", "pattern": "^[0-9]+-[0-9]+$"}]}
           },
           "new_symbols": {
             "type": "array",
@@ -58,64 +27,12 @@
               "type": "object",
               "required": ["type", "name", "line"],
               "properties": {
-                "type": {
-                  "type": "string",
-                  "enum": ["function", "property", "class", "struct", "enum", "protocol", "typealias"]
-                },
-                "name": {
-                  "type": "string"
-                },
-                "line": {
-                  "type": "integer",
-                  "minimum": 1
-                }
+                "type": {"type": "string", "enum": ["function", "property", "class", "struct", "enum", "protocol", "typealias"]},
+                "name": {"type": "string"},
+                "line": {"type": "integer", "minimum": 1}
               },
               "additionalProperties": false
             }
-          }
-        },
-        "additionalProperties": false
-      }
-    },
-    "new_functions": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["name", "file", "line"],
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "file": {
-            "type": "string"
-          },
-          "line": {
-            "type": "integer",
-            "minimum": 1
-          }
-        },
-        "additionalProperties": false
-      }
-    },
-    "new_types": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["name", "kind", "file", "line"],
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string",
-            "enum": ["class", "struct", "enum"]
-          },
-          "file": {
-            "type": "string"
-          },
-          "line": {
-            "type": "integer",
-            "minimum": 1
           }
         },
         "additionalProperties": false
@@ -125,24 +42,14 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["method", "old_signature", "new_signature", "file"],
+        "required": ["method", "old_signature", "file", "line", "change_type"],
         "properties": {
-          "method": {
-            "type": "string"
-          },
-          "old_signature": {
-            "type": "string"
-          },
-          "new_signature": {
-            "type": "string"
-          },
-          "file": {
-            "type": "string"
-          },
-          "line": {
-            "type": "integer",
-            "minimum": 1
-          }
+          "method": {"type": "string"},
+          "old_signature": {"type": "string"},
+          "new_signature": {"type": ["string", "null"]},
+          "file": {"type": "string"},
+          "line": {"type": "integer", "minimum": 1},
+          "change_type": {"type": "string", "enum": ["modified", "deleted"]}
         },
         "additionalProperties": false
       }

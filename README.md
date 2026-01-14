@@ -30,7 +30,7 @@ Create review report for PR 170
 |-------|---------|-------------|
 | 1. Extract | "Extract context for PR 170" | Fetch PR metadata and diff from GitHub |
 | 2. Analyze | "Analyse PR 170 files" | Run per-file review (style, quality, unused code) |
-| 3. Cross-check | "Check cross-file issues for PR 170" | Find DRY violations and breaking API changes |
+| 3. Cross-check | "Check cross-file issues for PR 170" | Find DRY violations, breaking API changes, SOLID issues |
 | 4. Report | "Create review report for PR 170" | Generate final markdown report |
 
 ## Output

@@ -1,199 +1,88 @@
 ---
 name: pr-file-analyzer
-description: STEP 2 agent (per-file). Unified analysis on ONE file (unused code, style, quality). Input: inline data. Output: review-*.json (only if findings exist).
+description: Per-file analysis for unused code, style issues, and quality problems.
 tools: Read, Write, Grep
+model: haiku
 ---
 
-# File Analyzer Agent
-
-## ROLE
-
-Review ONE file for unused code, style issues, and quality problems in a single pass.
-
-## RULES
-
-1. Review ONE file only
-2. ONLY flag issues in `ADDED_LINES` — never flag unchanged code
-3. Write output ONLY if findings exist
-4. If no findings, do not write any output file
+Review ONE file. ONLY flag issues in `ADDED_LINES`. ALWAYS write output.
 
 ## INPUT
 
 ```
 FILE_PATH: Sources/Managers/UserManager.swift
-ADDED_LINES: [{"line": 42, "content": "    func calculateAngle..."}, ...]
-NEW_SYMBOLS: [{"type": "function", "name": "calculateAngle", "line": 42}, ...]
+ADDED_LINES: ["42-50", "88"]
+NEW_SYMBOLS: [{"type": "function", "name": "calculateAngle", "line": 42}]
 OUTPUT_FILE: .pr-review-temp/review-Sources_Managers_UserManager.json
 ```
 
+**Line ranges:** `ADDED_LINES` contains ranges (`"42-50"`) or single lines (`"88"`). Expand ranges when checking scope.
+
+**Empty ADDED_LINES:** Write `"status": "skipped"`, `"findings": []`. NEW_SYMBOLS may be empty.
+
 ## EXECUTION
 
-### 1. Read Source File
+### 1. Read Source (Smart Batching)
 
+Read ONLY the relevant sections - where changes actually are:
+
+1. Parse ADDED_LINES ranges (expand `"42-50"` → lines 42-50)
+2. Sort all line numbers, group nearby ranges (merge if gap < 50 lines)
+3. For each group, add ±15 lines context and read:
+   ```
+   Read(file_path: FILE_PATH, offset: start - 15, limit: range_size + 30)
+   ```
+
+**Example:** `ADDED_LINES = ["42-50", "88", "650-680"]`
+- Group 1: 42-88 → `Read(offset: 27, limit: 76)` covers lines 27-103
+- Group 2: 650-680 → `Read(offset: 635, limit: 60)` covers lines 635-695
+
+### 2. Unused Code Check
+
+For each symbol in `NEW_SYMBOLS`, use `files_with_matches` mode (returns file paths only, not content - much cheaper):
+
+**Functions:**
 ```
-Read(file_path: FILE_PATH)
-```
-
-### 2. Check Unused Code
-
-For each symbol in `NEW_SYMBOLS`:
-
-**Search for ALL call patterns:**
-```
-Grep(pattern: "(\\.|\\b)symbolName\\(", glob: "*.swift", output_mode: "content")
-```
-
-This matches:
-- `.symbolName(` — instance method call
-- `symbolName(` — direct function call (word boundary)
-- `Self.symbolName(` — static call
-- `TypeName.symbolName(` — qualified call
-
-Exclude from check:
-- Definition itself (same file + line)
-- `@objc` / `@IBAction` / `override` methods
-- `init` / `deinit`
-- Protocol requirements
-- `private` symbols (only check within same file)
-
-If 0 call sites (excluding definition) → flag as unused.
-
-### 3. Style Checks (ADDED_LINES only)
-
-#### Modern Swift Patterns
-
-| Pattern | Issue | Fix |
-|---------|-------|-----|
-| `if let x = x` | Redundant binding | Use `if let x` |
-| `Array<String>` | Old generic syntax | Use `[String]` |
-| `Dictionary<K, V>` | Old generic syntax | Use `[K: V]` |
-
-#### Naming Issues
-
-| Pattern | Issue | Fix |
-|---------|-------|-----|
-| `var active: Bool` | Missing bool prefix | Use `isActive` |
-| `NewManager`, `LegacyHelper` | Temporal name | Remove temporal prefix |
-| `userString`, `nameArray` | Type in name | Use `userName`, `names` |
-| `cfg`, `mgr`, `btn`, `msg` | Abbreviation | Spell out fully |
-| `sort()` returning value | Mutating name for non-mutating | Use `sorted()` |
-
-#### Optional Patterns
-
-| Pattern | Issue |
-|---------|-------|
-| `String??` | Nested optional — design smell |
-| `a?.b?.c?.d?.e` | Deep chaining (4+) — restructure |
-
-#### Comment Quality
-
-| Pattern | Issue |
-|---------|-------|
-| `// Increment counter` before `i += 1` | Obvious comment |
-| `// Refactored`, `// New version` | Temporal comment |
-| Commented-out code blocks | Dead code |
-
-#### IUO Analysis
-
-| Pattern | Issue | Exception |
-|---------|-------|-----------|
-| `var name: Type!` | Unnecessary IUO | `@IBOutlet` is acceptable |
-
-### 4. Quality Checks (ADDED_LINES only)
-
-#### Safety
-
-| Pattern | Severity |
-|---------|----------|
-| `value!` | Critical |
-| `as!` | Critical |
-| `array[index]` without bounds check | Critical |
-| Empty catch blocks | Warning |
-| Hardcoded secrets | Critical |
-
-#### Memory Management
-
-| Pattern | Issue | Severity | Exception |
-|---------|-------|----------|-----------|
-| Closure with `self.` no `[weak self]` | Retain cycle | Critical | `UIView.animate`, value types |
-| `var delegate:` without `weak` | Non-weak delegate | Critical | — |
-| `addObserver(self` no `removeObserver` | NotificationCenter leak | Warning | — |
-| `Timer.scheduledTimer` no `invalidate()` | Timer leak | Warning | — |
-| `.sink {` no `.store(in:)` | Combine leak | Warning | — |
-
-#### Concurrency
-
-| Pattern | Issue | Severity |
-|---------|-------|----------|
-| `static var` (mutable) | Race condition | Warning |
-| UI updates in `DispatchQueue.global` | UI off main thread | Critical |
-| UI updates in `Task {` without MainActor | UI off main thread | Critical |
-
-#### Logic Errors
-
-| Pattern | Issue | Severity |
-|---------|-------|----------|
-| `a / b` without `b > 0` check | Division by zero | Warning |
-| `items.remove()` in `for item in items` | Mutation during iteration | Critical |
-| `0...array.count` | Off-by-one | Warning |
-| `array[array.count]` | Out of bounds | Critical |
-
-#### Data Integrity
-
-| Pattern | Issue | Severity |
-|---------|-------|----------|
-| `==` and `hash(into:)` use different properties | Hashable mismatch | Critical |
-
-### 5. Write Output (Conditional)
-
-**Only write if findings array is not empty.**
-
-If `findings.length == 0`: Do not write any file. Task is complete.
-
-If `findings.length > 0`:
-
-```
-Write(file_path: OUTPUT_FILE)
+Grep(pattern: "(\\.|\\b)symbolName\\(", glob: "*.swift", output_mode: "files_with_matches", head_limit: 5)
 ```
 
-```json
-{
-  "agent": "pr-file-analyzer",
-  "file": "[FILE_PATH]",
-  "findings": [
-    {
-      "severity": "warning|critical|suggestion",
-      "category": "Unused Code|Modern Swift|Naming|Force Unwrap|Index Safety|Memory Leak|Race Condition|Logic Error|Data Integrity|Design|Comments|Style",
-      "file": "[FILE_PATH]",
-      "line": 42,
-      "issue": "Description",
-      "evidence": "code snippet",
-      "fix": "How to fix"
-    }
-  ]
-}
+**Properties (var/let):**
+```
+Grep(pattern: "(\\.|\\b)symbolName\\b", glob: "*.swift", output_mode: "files_with_matches", head_limit: 5)
 ```
 
-## SEVERITY GUIDE
+**Decision logic:**
+- 0-1 files (or only definition file) → unused → flag warning
+- 2+ files → used → skip
 
-| Category | Severity |
-|----------|----------|
-| Unused Code | Warning |
-| Force Unwrap / Unsafe Access | Critical |
-| Style / Naming | Warning |
-| Old Syntax | Suggestion |
-| Abbreviations | Warning |
-| Nested Optionals | Warning |
-| Temporal Comments | Warning |
-| Unnecessary IUO | Warning |
-| Memory Leak / Retain Cycle | Critical |
-| Race Condition | Warning |
-| UI Threading | Critical |
-| Logic Errors | Warning/Critical |
-| Hashable Mismatch | Critical |
+**Skip checks entirely if symbol has:**
+- `@objc`, `@IBAction`, `override`, or is `init`/`deinit`
+- Declared as protocol requirement
 
-## COMPLETION
+### 3. Style & Quality Checks (ADDED_LINES only)
 
-Done when:
-- Analysis complete AND findings exist → OUTPUT_FILE written with valid JSON
-- Analysis complete AND no findings → No file written (task complete)
+**Critical (must fix):**
+- Force unwrap `!`, force cast `as!`, array access without bounds check
+- Memory: `self.` in closure without `[weak self]`, `var delegate:` without `weak`
+- Threading: UI update in `DispatchQueue.global` or `Task {` without MainActor
+- Collection: mutate while iterating, `array[array.count]`, `0...array.count`
+- Hashable: `==` and `hash(into:)` differ
+
+**Warning:**
+- Naming: bool without `is/has/can`, temporal prefixes (`New`, `Legacy`), type suffixes (`userString`)
+- Abbreviations: `cfg`, `mgr`, `btn` → spell out
+- Optionals: `String??` flatten, `Type!` use optional (except @IBOutlet)
+- Chains: `a?.b?.c?.d?.e` (4+) restructure
+- Comments: obvious (`// Increment counter`), temporal (`// Refactored`), commented-out code
+- Resources: `addObserver` without `removeObserver`, `Timer` without `invalidate`, `.sink` without `.store(in:)`
+- Mutable statics, empty catch blocks, hardcoded secrets
+
+**Suggestion:**
+- `if let x = x` → `if let x`
+- `Array<T>` → `[T]`, `Dictionary<K,V>` → `[K:V]`
+
+### 4. Output
+
+Write to OUTPUT_FILE per `schemas/agent-output.schema.json`:
+- `"status": "completed"` with findings array
+- `"status": "skipped"` if ADDED_LINES empty

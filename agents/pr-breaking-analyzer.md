@@ -1,144 +1,77 @@
 ---
 name: pr-breaking-analyzer
-description: STEP 3 agent (cross-file). Finds and analyzes breaking API changes in one pass. Output: breaking-analysis.json (only if findings exist).
+description: Cross-file analysis to find breaking API changes and affected callers.
 tools: Read, Write, Grep
+model: sonnet
 ---
 
-# Breaking Changes Analyzer
-
-## ROLE
-
-Find breaking API changes, locate affected callers, and provide migration guidance in a single pass.
-
-## RULES
-
-1. Limit analysis to 20 candidates maximum
-2. Report "skipped N additional candidates" if exceeded
-3. Flag Codable changes as CRITICAL
-4. Write output ONLY if findings exist
-5. If no findings, do not write any output file
+Find breaking API changes and affected callers. Max 20 candidates. ALWAYS write output.
 
 ## INPUT
 
+Format: `method|old_signature|new_signature|file:line|change_type`
+
+For deleted APIs: `new_signature` is empty, `change_type` is `deleted`.
+
 ```
 SIGNATURE_CHANGES:
-- method: process(data:)
-  old_signature: func process(data: Data) -> Result
-  new_signature: func process(data: Data, options: Options) -> Result
-  file: Sources/DataManager.swift
-  line: 45
+process(data:)|func process(data: Data) -> Result|func process(data: Data, options: Options) -> Result|Sources/DataManager.swift:45|modified
+oldMethod()|func oldMethod() -> Void||Sources/Deprecated.swift:10|deleted
+OUTPUT_FILE: .pr-review-temp/breaking-analysis.json
 ```
 
-## WHAT BREAKS
+**Empty SIGNATURE_CHANGES:** Write `"status": "skipped"`, `"findings": []`.
 
-| Change Type | Impact |
-|-------------|--------|
-| Add required parameter (no default) | Compile error |
-| Remove/rename parameter | Compile error |
-| Change parameter/return type | Compile error |
-| Add protocol requirement (no default) | Compile error |
-| Codable property rename/type change | Runtime failure |
+## BREAKING vs SAFE
 
-## SAFE CHANGES (Skip)
+**BREAKING:** New required param, removed/renamed param, type change, protocol requirement without default.
 
-- Parameter with default value
-- New method/property (additive)
-- Protocol method with default impl
-- More permissive access (private → internal)
+**SAFE (skip):** Param with default, new method/property, protocol with default impl, access widened.
 
 ## EXECUTION
 
-### 1. Verify Breaking Changes
+### 1. Handle Deleted Files
 
-For each change in SIGNATURE_CHANGES, determine if breaking:
-- New required parameter without default → BREAKING
-- Removed parameter → BREAKING
-- Changed type → BREAKING
-- Added default value → SAFE (skip)
+If SIGNATURE_CHANGES includes entries with `change_type: deleted`:
+- Extract method/property names from old signature
+- Search for callers using Grep (entire codebase)
+- Flag as CRITICAL if callers found (API removed but still used)
+- Add to findings with file path as the deleted file, evidence showing all affected callers
 
-### 2. Find Callers
+### 2. Identify Breaking Changes
 
-For each breaking change:
+For each signature change (non-deleted), compare old/new. Apply BREAKING vs SAFE rules.
+
+### 3. Find Callers (Two-Phase)
+
+**Phase 1 - Count:**
+```
+Grep(pattern: "\\.methodName\\(", glob: "*.swift", output_mode: "count")
+```
+Determines impact scope.
+
+**Phase 2 - Examples:**
+```
+Grep(pattern: "\\.methodName\\(", glob: "*.swift", output_mode: "content", head_limit: 15)
+```
+Gets caller examples for migration guidance.
+
+### 4. Check Codable
 
 ```
-Grep(pattern: "\\.methodName\\(", glob: "*.swift", output_mode: "content")
+Grep(pattern: "Codable|Decodable|Encodable", path: "[file]", output_mode: "content", head_limit: 5)
 ```
 
-### 3. Check Codable Types
+Codable property changes → CRITICAL.
 
-```
-Grep(pattern: "Codable|Decodable|Encodable", path: "[file]", output_mode: "content")
-```
+### 5. Analyze Impact (max 20)
 
-If changed type is Codable → mark as CRITICAL.
+Read caller files (limit 150 lines each). Determine migration steps.
 
-### 4. Analyze Impact (max 20)
+### 6. Output
 
-For each breaking change with callers:
+Write to OUTPUT_FILE per `schemas/agent-output.schema.json`.
 
-**A) Read Caller Files**
-```
-Read(file_path: "caller.swift")
-```
+**CRITICAL:** `file` field MUST be from SIGNATURE_CHANGES. Affected callers go in `fix`, not as separate findings.
 
-**B) Determine Required Changes**
-
-| Change | Migration |
-|--------|-----------|
-| New required param | Add parameter to each call |
-| Param type change | Convert type at call site |
-| Return type change | Update result handling |
-| Method removed | Find replacement |
-| Method renamed | Update call name |
-
-**C) Check Codable Impact**
-
-If type is Codable → CRITICAL:
-- Existing stored data will fail to decode
-- Suggest backward-compatible decoder
-
-### 5. Write Output (Conditional)
-
-**Only write if findings array is not empty.**
-
-If `findings.length == 0`: Do not write any file. Task is complete.
-
-If `findings.length > 0`:
-
-```
-Write(file_path: ".pr-review-temp/breaking-analysis.json")
-```
-
-```json
-{
-  "agent": "pr-breaking-analyzer",
-  "findings": [
-    {
-      "severity": "critical",
-      "category": "Breaking Change",
-      "file": "Sources/DataManager.swift",
-      "line": 45,
-      "issue": "Added required parameter to process(data:). Breaks 2 callers.",
-      "evidence": "OLD: func process(data: Data)\nNEW: func process(data: Data, options: Options)",
-      "fix": "Add default value OR update callers:\n- ViewController.swift:88\n- Worker.swift:120"
-    }
-  ],
-  "skipped_candidates": 0
-}
-```
-
-## SEVERITY GUIDE
-
-| Scenario | Severity |
-|----------|----------|
-| Codable change | Critical |
-| Removed public API | Critical |
-| Signature change | Critical |
-| Protocol requirement added | Critical |
-| Internal API (few callers) | Warning |
-
-## COMPLETION
-
-Done when:
-- Analysis complete AND findings exist → Output file written with valid JSON
-- Analysis complete AND no findings → No file written (task complete)
+Category: `"Breaking Change"` or `"Breaking Change (Codable)"`. Status: `"skipped"` if SIGNATURE_CHANGES empty.

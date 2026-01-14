@@ -1,95 +1,31 @@
 ---
 name: pr-review-report
-description: Generate final PR review report. Triggers on "Create review report for PR <number>". Outputs pr-review-temp.md.
-tools: Task, Read, Glob
+description: Generate final report. Triggers on "Create review report for PR <number>".
+tools: Task, Bash
 ---
-
-# PR Review: Report
-
-## ROLE
-
-Final step of PR review pipeline. Aggregate all findings into a markdown report.
-
-## TRIGGERS
-
-- "Create review report for PR 170"
-- "Generate PR 170 report"
-- "Finish PR 170 review"
-
-## PREREQUISITES
-
-`.pr-review-temp/pr-context.json` must exist. Run "Extract context for PR <number>" first.
 
 ## EXECUTION
 
-### 1. Load Context
+1. **Load (Minimal Context):**
+   ```bash
+   jq -r '"\(.pr_number)|\(.title)|\(.author)|\(.head_branch)|\(.base_branch)|\(.changed_files | length)"' .pr-review-temp/pr-context.json
+   ```
+   Output: `170|Feature title|author|feature-branch|main|12`
 
-```
-Read(file_path: ".pr-review-temp/pr-context.json")
-```
+2. **Spawn:**
+   ```
+   Task(subagent_type: "pr-review:pr-report-aggregator",
+        prompt: "PR_NUMBER: [N]\nTITLE: [T]\nAUTHOR: [A]\nBRANCH: [HEAD] → [BASE]\nFILES: [COUNT]")
+   ```
 
-If missing: `Run "Extract context for PR <number>" first.`
+3. **Verify:**
+   ```bash
+   test -f pr-review-temp.md && echo "OK" || echo "FAILED"
+   ```
 
-Extract: `pr_number`, `title`, `author`, `head_branch`, `base_branch`, `changed_files.length`
+4. **Count:**
+   ```bash
+   jq -r '.findings[] | .severity' .pr-review-temp/*.json 2>/dev/null | sort | uniq -c
+   ```
 
-### 2. Count Available Findings
-
-```
-Glob(pattern: ".pr-review-temp/*.json")
-```
-
-Exclude `pr-context.json`. Count finding files available.
-
-### 3. Spawn Report Aggregator
-
-```
-Task(
-  description: "Generate report",
-  subagent_type: "pr-review:pr-report-aggregator",
-  prompt: "PR_NUMBER: [NUMBER]\nTITLE: [TITLE]\nAUTHOR: [AUTHOR]\nBRANCH: [HEAD] -> [BASE]\nFILES: [COUNT]"
-)
-```
-
-### 4. Verify Output
-
-```
-Read(file_path: "pr-review-temp.md")
-```
-
-Check report contains:
-- Summary table
-- Findings sections
-
-### 5. Retry If Failed (Max 2)
-
-Re-spawn aggregator if report missing or malformed.
-
-### 6. Report
-
-```
-PR Review complete.
-Report: pr-review-temp.md
-
-Summary:
-- Critical: X
-- Warning: Y
-- Suggestion: Z
-```
-
-## OUTPUT
-
-| File | Location |
-|------|----------|
-| `pr-review-temp.md` | Project root |
-
-## ERROR HANDLING
-
-| Error | Action |
-|-------|--------|
-| Context missing | "Run extract first" |
-| No findings | Generate report with "No issues found" |
-| Aggregator fails | Retry twice, then STOP |
-
-## COMPLETION
-
-Done when `pr-review-temp.md` exists in project root.
+5. **Report:** `Complete. Report: pr-review-temp.md | Critical: X | Warning: Y | Suggestion: Z`

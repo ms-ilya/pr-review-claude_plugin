@@ -1,6 +1,6 @@
 {
   "name": "pr-review",
-  "description": "Multi-stage PR review for Swift codebases. Commands: extract, analyze, cross-check, report. Token-resilient with resumable stages.",
+  "description": "Multi-agent PR review for Swift codebases with resumable stages.",
   "version": "1.0.0",
   "author": {
     "name": "Ilya"
